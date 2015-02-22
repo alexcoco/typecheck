@@ -21,7 +21,12 @@ data Type =
     TInt
   | TFloat
   | TBool
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show Type where
+  show TInt   = "integer"
+  show TFloat = "float"
+  show TBool  = "boolean"
 
 data Value =
     Int Integer
@@ -118,6 +123,10 @@ program = many (try stmt)
 
 type Env = Map Identifier Type
 
+showEnv :: Env -> String
+showEnv e = unlines $ map aux $ M.assocs e
+  where aux (i,t) = i ++ ": " ++ show t
+
 data Frame =
     Frame Env Frame
   | None
@@ -127,7 +136,7 @@ instance Show Frame where
   show (Frame e f) = assocs ++ "---\n" ++ show f
     where assocs = unlines . map show $ M.assocs e
 
-type Check = ExceptT TypeError (State Frame)
+type Check = ExceptT TypeError (State (String, Frame))
 
 data TypeError =
     NotInScope Identifier
@@ -139,32 +148,37 @@ emptyFrame = Frame M.empty None
 
 local :: (Frame -> Frame) -> Check a -> Check a
 local f c = do
-  frame <- get
-  put (f frame)
+  (log, frame) <- get
+  put (log, f frame)
   x <- c
-  put frame
+  put (log, frame)
   return x
 
-addType :: Identifier -> Type -> Frame -> Frame
-addType i t f = case f of
-  Frame e f' -> Frame (M.insert i t e) f'
-  None       -> None
+addType :: Identifier -> Type -> (String, Frame) -> (String, Frame)
+addType i t (l,f) = case f of
+  Frame e f' -> (l, Frame (M.insert i t e) f')
+  None       -> (l, None)
 
 newFrame :: Check ()
 newFrame = do
-  frame <- get
-  put $ Frame M.empty frame
+  (log, frame) <- get
+  put (log, Frame M.empty frame)
 
 restoreFrame :: Check ()
 restoreFrame = do
-  frame <- get
+  (log, frame) <- get
+
+  let log' = case frame of
+               Frame e f -> log ++ "\n" ++ showEnv e
+               None -> log
+
   case frame of
-    Frame e f -> put f
+    Frame e f -> put (log', f)
     None -> return ()
 
 checkIdent :: Identifier -> Check Type
 checkIdent i = do
-  frame <- get
+  (log, frame) <- get
   case frame of
     None -> throwError $ NotInScope i
     Frame env frame' -> case M.lookup i env of
@@ -184,38 +198,26 @@ checkStmt s = case s of
   i := e  -> do t1 <- checkIdent i
                 t2 <- checkExpr e
                 when (t1 /= t2) $ throwError (Mismatch t1 t2)
-  Block p -> newFrame >> check p >> restoreFrame
+  Block p -> newFrame >> check p
 
 check :: Program -> Check ()
-check []     = return ()
+check []     = restoreFrame
 check (x:xs) = checkStmt x >> check xs
 
-runCheck :: Frame -> Check a -> (Either TypeError a, Frame)
-runCheck frame = flip runState frame . runExceptT
+runCheck :: String -> Frame -> Check a -> (Either TypeError a, (String, Frame))
+runCheck s f = flip runState (s, f) . runExceptT
 
 main = do
-  let s = "var x int;\nx = 10;\nbegin\n  var x bool;\n  x = 10;\nend"
-
-  -- Print program
-  putStrLn s
-  putStrLn ""
+  src <- readFile "test.tc"
 
   -- Parse
-  putStr "Parsing..."
-  case parse (program <* eof) "<program>" s of
+  case parse (program <* eof) "<program>" src of
     Left e -> print e
-    Right p -> do
-      -- Parse OK
-      putStrLn "OK"
-      mapM_ print p
-      putStrLn ""
+    Right p -> do -- Parse OK
 
       -- Type check
-      putStr "Checking types..."
-      let (result, frame) = runCheck emptyFrame $ check p
+      let (result, (log, frame)) = runCheck "" emptyFrame $ check p
       case result of
-        Left err -> putStrLn "Error" >> print err
-        Right t  -> putStrLn "OK"
-
-      putStrLn "Frame Stack:"
-      print frame
+        Left err -> do putStrLn $ "Type Error: " ++ show err
+                       putStrLn log
+        Right _  -> putStrLn "Type OK" >> putStrLn log

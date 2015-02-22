@@ -1,0 +1,21 @@
+var x int;
+x = 10;
+
+begin
+  var x bool;
+  x = true;
+end
+
+begin
+  var x int;
+  x = 10;
+
+  var y bool;
+  y = false;
+
+  var z bool;
+  z = y;
+end
+
+var y int;
+y = x;
