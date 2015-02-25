@@ -13,7 +13,7 @@ import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as M
 
-type Program = [Stmt]
+type Program a = [Stmt a]
 
 type Identifier = String
 
@@ -34,16 +34,18 @@ data Value =
   | Bool Bool
   deriving (Eq, Show)
 
-data Expr =
+data Expr a =
     Lit Value
-  | Var Identifier
+  | Var Identifier a
   deriving (Eq, Show)
 
-data Stmt =
+data Stmt a =
     Identifier ::: Type
-  | Identifier := Expr
-  | Block Program
+  | Identifier := (Expr a)
+  | Block (Program a)
   deriving (Eq, Show)
+
+type Annotation = Type
 
 lexer = Token.makeTokenParser emptyDef
 int   = Token.integer lexer
@@ -85,7 +87,7 @@ spaces = void $ many space
 spaces1 :: Parser ()
 spaces1 = void $ many1 space
 
-decl :: Parser Stmt
+decl :: Parser (Stmt ())
 decl = do
   string "var" >> spaces
   i <- identifier <* spaces
@@ -93,7 +95,7 @@ decl = do
   char ';'
   return $ i ::: t
 
-assign :: Parser Stmt
+assign :: Parser (Stmt ())
 assign = do
   i <- identifier
   spaces >> char '=' >> spaces
@@ -101,22 +103,22 @@ assign = do
   char ';'
   return $ i := e
 
-block :: Parser Stmt
+block :: Parser (Stmt ())
 block = do
   string "begin" >> spaces1
   p <- program
   string "end"
   return $ Block p
 
-expr :: Parser Expr
+expr :: Parser (Expr ())
 expr =  try (fmap Lit value)
-    <|> fmap Var identifier
+    <|> (identifier >>= (\ident -> return $ Var ident ()))
     <?> "expression"
 
-stmt :: Parser Stmt
+stmt :: Parser (Stmt ())
 stmt = (try decl <|> block <|> assign) <* spaces
 
-program :: Parser Program
+program :: Parser (Program ())
 program = many (try stmt)
 
 --------------------------------------------------------------------------------
@@ -185,24 +187,34 @@ checkIdent i = do
                           Just t  -> return t
                           Nothing -> local (const frame') (checkIdent i)
 
-checkExpr :: Expr -> Check Type
-checkExpr e = case e of
-  Lit (Int _)   -> return TInt
-  Lit (Float _) -> return TFloat
-  Lit (Bool _)  -> return TBool
-  Var i         -> checkIdent i
+checkExpr :: Expr () -> Check (Expr Annotation)
+checkExpr (Var i _) = do 
+    tp <- checkIdent i
+    return $ Var i tp 
+checkExpr (Lit a) = return (Lit a)
 
-checkStmt :: Stmt -> Check ()
+typeOf :: (Expr Annotation) -> Type
+typeOf (Lit (Int _)) = TInt
+typeOf (Lit (Float _)) = TFloat
+typeOf (Lit (Bool _)) = TBool
+typeOf (Var i tp) = tp
+
+checkStmt :: Stmt () -> Check (Stmt Annotation)
 checkStmt s = case s of
-  i ::: t -> modify (addType i t)
+  i ::: t -> modify (addType i t) >> return (i ::: t)
   i := e  -> do t1 <- checkIdent i
-                t2 <- checkExpr e
+                e' <- checkExpr e
+                let t2 = typeOf e'
                 when (t1 /= t2) $ throwError (Mismatch t1 t2)
-  Block p -> newFrame >> check p
+                return $ i := e'
+  Block p -> newFrame >> check p >>= (\xs -> return . Block $ xs)
 
-check :: Program -> Check ()
-check []     = restoreFrame
-check (x:xs) = checkStmt x >> check xs
+check :: Program () -> Check [Stmt Annotation]
+check []     = restoreFrame >> return []
+check (x:xs) = do
+  x' <- checkStmt x
+  xs' <- check xs
+  return $ x':xs'
 
 runCheck :: String -> Frame -> Check a -> (Either TypeError a, (String, Frame))
 runCheck s f = flip runState (s, f) . runExceptT
@@ -216,8 +228,10 @@ main = do
     Right p -> do -- Parse OK
 
       -- Type check
-      let (result, (log, frame)) = runCheck "" emptyFrame $ check p
+      let all@(result, (log, frame)) = runCheck "" emptyFrame $ check p
       case result of
         Left err -> do putStrLn $ "Type Error: " ++ show err
                        putStrLn log
-        Right _  -> putStrLn "Type OK" >> putStrLn log
+        Right value  -> do putStrLn "Type OK" 
+                           putStrLn log
+                           putStrLn (show all)

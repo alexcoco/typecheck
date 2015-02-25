@@ -13,6 +13,11 @@ begin
   var y bool;
   y = false;
 
+  begin
+    var y float;
+    y = y;
+  end
+
   var z bool;
   z = y;
 end
